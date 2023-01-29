@@ -227,13 +227,14 @@ void zboss_signal_handler2(zb_bufid_t bufid) {
 
 	switch (sig){
     case ZB_ZDO_SIGNAL_PRODUCTION_CONFIG_READY:
-        printk("Restored config?\n");
+        printk("App config loaded: %d\n", status == RET_OK);
         break;
 	case ZB_ZDO_SIGNAL_SKIP_STARTUP:
-		printk("Zigbee stack init\n");
+		printk("Zigbee stack init: %d\n", status == RET_OK);
 		bdb_start_top_level_commissioning(ZB_BDB_INITIALIZATION);
 		break;
 	case ZB_BDB_SIGNAL_DEVICE_FIRST_START:
+        printk("Started first time after NVRAM erase: %d\n", status == RET_OK);
 		if (status == RET_OK) {
 			printk("Start network steering\n");
 			bdb_start_top_level_commissioning(ZB_BDB_NETWORK_STEERING);
@@ -242,6 +243,7 @@ void zboss_signal_handler2(zb_bufid_t bufid) {
 		}
 		break;
 	case ZB_BDB_SIGNAL_STEERING:
+        printk("Network steering: %d\n", status == RET_OK);
 		if (status == RET_OK) {
 			printk("Joined network!\n");
 		} else {
@@ -309,19 +311,11 @@ void zigbee_setup() {
 static zb_uint32_t i = 0;
 void measure_distance() {
     //if (!system_param.connected) return;
-    
-    zb_zcl_set_attr_val(
-        ULTRASOUND_DISTANCE_ENDPOINT,
-        ZB_ZCL_CLUSTER_ID_BASIC,
-        ZB_ZCL_CLUSTER_SERVER_ROLE,
-        ZB_ZCL_ATTR_BASIC_HW_VERSION_ID,
-        &i,
-        ZB_FALSE);
-
     // -- Measure distance
-    printk("Measure distance %d\n", i++);
+    printk("Measure distance %d\n", ++i);
     // integer to bytes
-    zb_uint8_t *bytes = (zb_uint8_t *)&i;
+    float distance = (float)i;
+    zb_uint8_t *bytes = (zb_uint8_t *) &distance;
 
     zb_zcl_status_t result = zb_zcl_set_attr_val(
         ULTRASOUND_DISTANCE_ENDPOINT,
@@ -340,6 +334,7 @@ void measure_distance() {
         ZB_ZCL_CLUSTER_SERVER_ROLE,
         ZB_ZCL_ATTR_ANALOG_INPUT_PRESENT_VALUE_ID
     );
+    /*
     zb_bool_t resp = zcl_is_attr_reported(
             ULTRASOUND_DISTANCE_ENDPOINT,
             ZB_ZCL_CLUSTER_ID_ANALOG_INPUT,
@@ -349,8 +344,22 @@ void measure_distance() {
         printk("Attribute is reported\n");
     } else {
         printk("Attribute is not reported\n");
-    }
+    }*/
 
+}
+
+void start_reporting() {
+    zb_ret_t resp = zb_zcl_start_attr_reporting(
+            ULTRASOUND_DISTANCE_ENDPOINT,
+            ZB_ZCL_CLUSTER_ID_ANALOG_INPUT,
+            ZB_ZCL_CLUSTER_SERVER_ROLE,
+            ZB_ZCL_ATTR_ANALOG_INPUT_PRESENT_VALUE_ID);
+
+    if (resp == RET_OK) {
+        printk("Reporting started!\n");
+    } else {
+        printk("Reporting failed to start\n");
+    }
 }
 
 void main(void)
@@ -392,35 +401,14 @@ void main(void)
 
 	zigbee_setup();
 	zigbee_enable();
-
-    zb_ret_t resp = zb_zcl_start_attr_reporting(
-            ULTRASOUND_DISTANCE_ENDPOINT,
-            ZB_ZCL_CLUSTER_ID_ANALOG_INPUT,
-            ZB_ZCL_CLUSTER_SERVER_ROLE,
-            ZB_ZCL_ATTR_ANALOG_INPUT_PRESENT_VALUE_ID);
-    if (resp == RET_OK) {
-        printk("Reporting started!\n");
-    } else {
-        printk("Reporting failed to start\n");
-    }
-
-    resp = zb_zcl_start_attr_reporting(
-            ULTRASOUND_DISTANCE_ENDPOINT,
-            ZB_ZCL_CLUSTER_ID_BASIC,
-            ZB_ZCL_CLUSTER_SERVER_ROLE,
-            ZB_ZCL_ATTR_BASIC_HW_VERSION_ID);
-    if (resp == RET_OK) {
-        printk("Reporting started!\n");
-    } else {
-        printk("Reporting failed to start\n");
-    }
+    start_reporting();
 
 	i = 1;
 	while (1) {
 		gpio_pin_set_raw(led.port, led.pin, i % 2);
         printk("Main loop %d\n", i++);
 		if (i % 10 == 0) {
-            zboss_main_loop_iteration();
+            //zboss_main_loop_iteration();
             printk("measuring\n");
             measure_distance();
 		}
