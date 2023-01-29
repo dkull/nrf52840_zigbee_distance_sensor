@@ -24,6 +24,7 @@
 #include <zigbee/zigbee_zcl_scenes.h>
 #include <zb_nrf_platform.h>
 
+#include "my_zb_zcl_analog_input.h"
 #include "zb_ultrasound_distance.h"
 
 // Edited remotely
@@ -40,10 +41,11 @@ BUILD_ASSERT(DT_NODE_HAS_COMPAT(DT_CHOSEN(zephyr_console), zephyr_cdc_acm_uart),
  * Defines
  */
 
+#define ZB_ZCL_MIN_REPORTING_INTERVAL_DEFAULT 0x05
 #define ZIGBEE_NETWORK_STATE_LED 0
 #define LED0 DT_ALIAS(led0)
 /* Device endpoint, used to receive ZCL commands. */
-#define ULTRASOUND_DISTANCE_ENDPOINT 10
+#define ULTRASOUND_DISTANCE_ENDPOINT 1
 static const struct gpio_dt_spec led = GPIO_DT_SPEC_GET(LED0, gpios);
 
 /* ESP tutorial */
@@ -62,17 +64,17 @@ static const struct gpio_dt_spec led = GPIO_DT_SPEC_GET(LED0, gpios);
 // ===== Declare Structures =====
 
 typedef struct {
-	zb_bool_t present_value;
+	zb_uint32_t present_value;
 	zb_bool_t out_of_service;
 	zb_uint8_t status_flags;
-} my_zb_zcl_binary_input_attrs;
+} my_zb_zcl_analog_input_basic_attrs;
 
 typedef struct {
 	zb_zcl_basic_attrs_ext_t basic_attr;
 	zb_zcl_identify_attrs_t identify_attr;
 	zb_zcl_scenes_attrs_t scenes_attr;
 	zb_zcl_groups_attrs_t groups_attr;
-	my_zb_zcl_binary_input_attrs binary_input_attr;
+	my_zb_zcl_analog_input_basic_attrs analog_input_attr;
 } zb_device_ctx;
 
 static zb_device_ctx dev_ctx;
@@ -105,18 +107,19 @@ ZB_ZCL_DECLARE_SCENES_ATTRIB_LIST(scenes_attr_list,
 	&dev_ctx.scenes_attr.scene_valid,
 	&dev_ctx.scenes_attr.name_support);
 	
-
-ZB_ZCL_DECLARE_BINARY_INPUT_ATTRIB_LIST(binary_input_attr_list,
-	&dev_ctx.binary_input_attr.out_of_service,
-	&dev_ctx.binary_input_attr.present_value,
-	&dev_ctx.binary_input_attr.status_flags);
+ZB_ZCL_DECLARE_ANALOG_INPUT_ATTRIB_LIST(analog_input_attr_list,
+    &dev_ctx.analog_input_attr.out_of_service,
+    &dev_ctx.analog_input_attr.present_value,
+    &dev_ctx.analog_input_attr.status_flags);
 
 // ===== Declare Device =====
 
 ZB_DECLARE_ULTRASOUND_DISTANCE_CLUSTER_LIST(ultrasound_distance_clusters,
 	basic_attr_list,
 	identify_attr_list,
-	binary_input_attr_list);
+    groups_attr_list,
+    scenes_attr_list,
+	analog_input_attr_list);
 
 ZB_DECLARE_ULTRASOUND_DISTANCE_EP(
 	ultrasound_distance_ep,
@@ -152,9 +155,9 @@ static void init_zigbee_cluster_attributes() {
 	dev_ctx.scenes_attr.name_support = 0;
 
 	// Distance attributes
-	dev_ctx.binary_input_attr.out_of_service = false;
-	dev_ctx.binary_input_attr.present_value = true;
-	dev_ctx.binary_input_attr.status_flags = 0;
+	dev_ctx.analog_input_attr.out_of_service = false;
+	dev_ctx.analog_input_attr.present_value = 123.0;
+	dev_ctx.analog_input_attr.status_flags = 0;
 }
 
 static void start_identifying() {
@@ -200,6 +203,13 @@ static void zcl_device_cb(zb_bufid_t bufid) {
 }
 
 void zboss_signal_handler(zb_bufid_t bufid) {
+    ZB_ERROR_CHECK(zigbee_default_signal_handler(bufid));
+    if (bufid) {
+        zb_buf_free(bufid);
+    }
+}
+
+void zboss_signal_handler2(zb_bufid_t bufid) {
 
 	// update network status led
 	//zigbee_led_status_update(bufid, ZIGBEE_NETWORK_STATE_LED);
@@ -216,6 +226,9 @@ void zboss_signal_handler(zb_bufid_t bufid) {
 	}
 
 	switch (sig){
+    case ZB_ZDO_SIGNAL_PRODUCTION_CONFIG_READY:
+        printk("Restored config?\n");
+        break;
 	case ZB_ZDO_SIGNAL_SKIP_STARTUP:
 		printk("Zigbee stack init\n");
 		bdb_start_top_level_commissioning(ZB_BDB_INITIALIZATION);
@@ -238,7 +251,17 @@ void zboss_signal_handler(zb_bufid_t bufid) {
 		}
 		break;
 	case ZB_BDB_SIGNAL_DEVICE_REBOOT:
-		printk("Re/Joined a network\n");
+		printk("Re/Joined a network using NVRAM contents\n");
+        zb_ret_t resp = zb_zcl_start_attr_reporting(
+                ULTRASOUND_DISTANCE_ENDPOINT,
+                ZB_ZCL_CLUSTER_ID_ANALOG_INPUT,
+                ZB_ZCL_CLUSTER_SERVER_ROLE,
+                ZB_ZCL_ATTR_ANALOG_INPUT_PRESENT_VALUE_ID);
+        if (resp == RET_OK) {
+            printk("Reporting started!\n");
+        } else {
+            printk("Reporting failed to start\n");
+        }
 		break;
 	case ZB_COMMON_SIGNAL_CAN_SLEEP:
 		break;
@@ -273,6 +296,7 @@ void zigbee_setup() {
 
 	zb_set_network_ed_role(ZB_TRANSCEIVER_ALL_CHANNELS_MASK);
 	// -- HW Related
+
 	ZB_ZCL_REGISTER_DEVICE_CB(zcl_device_cb);
 	ZB_AF_REGISTER_DEVICE_CTX(&ultrasound_distance_ctx);
 
@@ -280,6 +304,53 @@ void zigbee_setup() {
 	init_zigbee_cluster_attributes();
 
 	ZB_AF_SET_IDENTIFY_NOTIFICATION_HANDLER(ULTRASOUND_DISTANCE_ENDPOINT, identify_cb);
+}
+
+static zb_uint32_t i = 0;
+void measure_distance() {
+    //if (!system_param.connected) return;
+    
+    zb_zcl_set_attr_val(
+        ULTRASOUND_DISTANCE_ENDPOINT,
+        ZB_ZCL_CLUSTER_ID_BASIC,
+        ZB_ZCL_CLUSTER_SERVER_ROLE,
+        ZB_ZCL_ATTR_BASIC_HW_VERSION_ID,
+        &i,
+        ZB_FALSE);
+
+    // -- Measure distance
+    printk("Measure distance %d\n", i++);
+    // integer to bytes
+    zb_uint8_t *bytes = (zb_uint8_t *)&i;
+
+    zb_zcl_status_t result = zb_zcl_set_attr_val(
+        ULTRASOUND_DISTANCE_ENDPOINT,
+        ZB_ZCL_CLUSTER_ID_ANALOG_INPUT,
+        ZB_ZCL_CLUSTER_SERVER_ROLE,
+        ZB_ZCL_ATTR_ANALOG_INPUT_PRESENT_VALUE_ID,
+        bytes,
+        ZB_FALSE
+    );
+    if (result != ZB_ZCL_STATUS_SUCCESS) {
+        printk("Failed to set attribute value: %d\n", result);
+    }
+    zb_zcl_mark_attr_for_reporting(
+        ULTRASOUND_DISTANCE_ENDPOINT,
+        ZB_ZCL_CLUSTER_ID_ANALOG_INPUT,
+        ZB_ZCL_CLUSTER_SERVER_ROLE,
+        ZB_ZCL_ATTR_ANALOG_INPUT_PRESENT_VALUE_ID
+    );
+    zb_bool_t resp = zcl_is_attr_reported(
+            ULTRASOUND_DISTANCE_ENDPOINT,
+            ZB_ZCL_CLUSTER_ID_ANALOG_INPUT,
+            ZB_ZCL_CLUSTER_SERVER_ROLE,
+            ZB_ZCL_ATTR_ANALOG_INPUT_PRESENT_VALUE_ID);
+    if (resp) {
+        printk("Attribute is reported\n");
+    } else {
+        printk("Attribute is not reported\n");
+    }
+
 }
 
 void main(void)
@@ -322,13 +393,37 @@ void main(void)
 	zigbee_setup();
 	zigbee_enable();
 
-	i = 0;
+    zb_ret_t resp = zb_zcl_start_attr_reporting(
+            ULTRASOUND_DISTANCE_ENDPOINT,
+            ZB_ZCL_CLUSTER_ID_ANALOG_INPUT,
+            ZB_ZCL_CLUSTER_SERVER_ROLE,
+            ZB_ZCL_ATTR_ANALOG_INPUT_PRESENT_VALUE_ID);
+    if (resp == RET_OK) {
+        printk("Reporting started!\n");
+    } else {
+        printk("Reporting failed to start\n");
+    }
+
+    resp = zb_zcl_start_attr_reporting(
+            ULTRASOUND_DISTANCE_ENDPOINT,
+            ZB_ZCL_CLUSTER_ID_BASIC,
+            ZB_ZCL_CLUSTER_SERVER_ROLE,
+            ZB_ZCL_ATTR_BASIC_HW_VERSION_ID);
+    if (resp == RET_OK) {
+        printk("Reporting started!\n");
+    } else {
+        printk("Reporting failed to start\n");
+    }
+
+	i = 1;
 	while (1) {
-		//printk("Hello USB Console %d\n", i++);
 		gpio_pin_set_raw(led.port, led.pin, i % 2);
-		if (i % 5 == 0) {
-			//start_identifying();
+        printk("Main loop %d\n", i++);
+		if (i % 10 == 0) {
+            zboss_main_loop_iteration();
+            printk("measuring\n");
+            measure_distance();
 		}
-		k_sleep(K_MSEC(200));
+		k_sleep(K_MSEC(1000));
 	}
 }

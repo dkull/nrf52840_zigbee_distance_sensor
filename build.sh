@@ -1,5 +1,6 @@
 # python3 -m pip install west pyelftools
 set +x
+set -e
 #rm -rf build/
 source ~/ncs/zephyr/zephyr-env.sh
 python3 -m west build -b nrf52840_mdk_usb_dongle ./
